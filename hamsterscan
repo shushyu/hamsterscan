@@ -1,0 +1,59 @@
+#!/bin/bash
+NS=$1
+
+{
+  echo "NAME CPU_REQ MEM_REQ CPU_LIM MEM_LIM CPU_ACTUAL MEM_ACTUAL"
+  join -1 1 -2 1 \
+    <(oc get pods -n "$NS" --no-headers -o=custom-columns='NAME:.metadata.name,CPU_REQ:.spec.containers[*].resources.requests.cpu,MEM_REQ:.spec.containers[*].resources.requests.memory,CPU_LIM:.spec.containers[*].resources.limits.cpu,MEM_LIM:.spec.containers[*].resources.limits.memory' | sort -k1,1) \
+    <(oc adm top pods -n "$NS" --no-headers | awk '{print $1, $2, $3}' | sort -k1,1)
+} | awk '
+# CPU-Wert nach Millicores parsen (auch kommagetrennte Multi-Container-Werte)
+function cpu_m(s,    n, arr, i, v, sum) {
+  if (s == "<none>" || s == "") return 0
+  sum = 0
+  n = split(s, arr, ",")
+  for (i = 1; i <= n; i++) {
+    v = arr[i]
+    if (v == "<none>" || v == "") continue
+    if (v ~ /m$/) { sub(/m$/, "", v); sum += v + 0 }
+    else          { sum += (v + 0) * 1000 }
+  }
+  return sum
+}
+# Memory-Wert nach Mi parsen (auch kommagetrennte Multi-Container-Werte)
+function mem_mi(s,    n, arr, i, v, sum) {
+  if (s == "<none>" || s == "") return 0
+  sum = 0
+  n = split(s, arr, ",")
+  for (i = 1; i <= n; i++) {
+    v = arr[i]
+    if (v == "<none>" || v == "") continue
+    if      (v ~ /Gi$/) { sub(/Gi$/, "", v); sum += (v + 0) * 1024 }
+    else if (v ~ /Mi$/) { sub(/Mi$/, "", v); sum += v + 0 }
+    else if (v ~ /Ki$/) { sub(/Ki$/, "", v); sum += (v + 0) / 1024 }
+    else                { sum += v + 0 }
+  }
+  return sum
+}
+# Millicores lesbar formatieren
+function fmt_cpu(m) {
+  if (m >= 1000) return sprintf("%.2f", m / 1000)
+  return sprintf("%dm", m)
+}
+# Mi lesbar formatieren
+function fmt_mem(mi) {
+  if (mi >= 1024) return sprintf("%.1fGi", mi / 1024)
+  return sprintf("%dMi", mi)
+}
+NR == 1 { print; next }
+{
+  print
+  cr += cpu_m($2);  mr += mem_mi($3)
+  cl += cpu_m($4);  ml += mem_mi($5)
+  cu += cpu_m($6);  mu += mem_mi($7)
+}
+END {
+  print "-----"
+  printf "SUMME %s %s %s %s %s %s\n", fmt_cpu(cr), fmt_mem(mr), fmt_cpu(cl), fmt_mem(ml), fmt_cpu(cu), fmt_mem(mu)
+}
+' | column -t
